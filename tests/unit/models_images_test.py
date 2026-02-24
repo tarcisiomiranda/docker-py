@@ -2,6 +2,7 @@ import unittest
 import warnings
 
 from docker.constants import DEFAULT_DATA_CHUNK_SIZE
+from docker.errors import BuildError
 from docker.models.images import Image
 
 from .fake_api import FAKE_IMAGE_ID
@@ -16,6 +17,32 @@ class ImageCollectionTest(unittest.TestCase):
         client.api.inspect_image.assert_called_with(FAKE_IMAGE_ID)
         assert isinstance(image, Image)
         assert image.id == FAKE_IMAGE_ID
+
+    def test_build_stream(self):
+        client = make_fake_client({
+            'build.return_value': [
+                b'{"stream":"Step 1/1 : FROM alpine\\n"}\r\n',
+                b'{"stream":"Successfully built abcd1234\\n"}\r\n',
+            ],
+        })
+
+        events = client.images.build(stream=True)
+        assert list(events) == [
+            {'stream': 'Step 1/1 : FROM alpine\n'},
+            {'stream': 'Successfully built abcd1234\n'},
+        ]
+
+    def test_build_stream_with_error(self):
+        client = make_fake_client({
+            'build.return_value': [
+                b'{"stream":"Step 1/1 : FROM alpine\\n"}\r\n',
+                b'{"error":"build failed"}\r\n',
+            ],
+        })
+
+        events = client.images.build(stream=True)
+        with self.assertRaises(BuildError):
+            list(events)
 
     def test_get(self):
         client = make_fake_client()

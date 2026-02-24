@@ -279,8 +279,15 @@ class ImageCollection(Collection):
                 configuration file (``~/.docker/config.json`` by default)
                 contains a proxy configuration, the corresponding environment
                 variables will be set in the container being built.
+            stream (bool): If ``True``, return a generator of decoded build
+                events as they are produced. In this mode, this method does
+                not return an image object.
 
         Returns:
+            If ``stream=True``:
+            (generator): A generator of JSON-decoded build events.
+
+            Otherwise:
             (tuple): The first item is the :py:class:`Image` object for the
                 image that was built. The second item is a generator of the
                 build logs as JSON-decoded objects.
@@ -293,9 +300,12 @@ class ImageCollection(Collection):
             ``TypeError``
                 If neither ``path`` nor ``fileobj`` is specified.
         """
+        stream = kwargs.pop('stream', False)
         resp = self.client.api.build(**kwargs)
         if isinstance(resp, str):
             return self.get(resp)
+        if stream:
+            return _BuildResult(json_stream(resp))
         last_event = None
         image_id = None
         result_stream, internal_stream = itertools.tee(json_stream(resp))
@@ -493,6 +503,26 @@ class ImageCollection(Collection):
     def prune_builds(self, *args, **kwargs):
         return self.client.api.prune_builds(*args, **kwargs)
     prune_builds.__doc__ = APIClient.prune_builds.__doc__
+
+
+class _BuildResult:
+    """Iterate build events in real-time while preserving BuildError behavior."""
+
+    def __init__(self, stream):
+        self._stream = iter(stream)
+        self._events = []
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        chunk = next(self._stream)
+        self._events.append(chunk)
+        if 'error' in chunk:
+            raise BuildError(chunk['error'], self._events)
+        return chunk
+
+    next = __next__
 
 
 def normalize_platform(platform, engine_info):

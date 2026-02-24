@@ -894,6 +894,16 @@ class ContainerCollection(Collection):
                 stdout=stdout, stderr=stderr, stream=True, follow=True
             )
 
+        if stream and out is not None:
+            return _RunResult(
+                out,
+                container=container,
+                remove=remove,
+                command=command,
+                image=image,
+                auto_remove=kwargs.get('auto_remove'),
+            )
+
         exit_status = container.wait()['StatusCode']
         if exit_status != 0:
             out = None
@@ -907,7 +917,9 @@ class ContainerCollection(Collection):
                 container, exit_status, command, image, out
             )
 
-        if stream or out is None:
+        if stream:
+            return out
+        if out is None:
             return out
         return b''.join(out)
 
@@ -1027,6 +1039,78 @@ class ContainerCollection(Collection):
         return self.client.api.prune_containers(filters=filters)
 
     prune.__doc__ = APIClient.prune_containers.__doc__
+
+
+class _RunResult:
+    """Wrap a container log stream and finalize run lifecycle on completion."""
+
+    def __init__(self, stream, container, remove, command, image, auto_remove):
+        self._raw_stream = stream
+        self._stream = iter(stream)
+        self._container = container
+        self._remove = remove
+        self._command = command
+        self._image = image
+        self._auto_remove = auto_remove
+        self._finished = False
+        self._closed = False
+        self.exit_status = None
+        self.stderr = None
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        try:
+            return next(self._stream)
+        except StopIteration:
+            self._finish(check=True)
+            raise
+
+    next = __next__
+
+    def close(self):
+        self._closed = True
+        if hasattr(self._raw_stream, 'close'):
+            self._raw_stream.close()
+
+    def wait(self, check=True):
+        """Wait for container completion and return exit status."""
+        self._finish(check=check, force=True)
+        return self.exit_status
+
+    def _finish(self, check=True, force=False):
+        if self._finished:
+            if check and self.exit_status != 0:
+                raise ContainerError(
+                    self._container,
+                    self.exit_status,
+                    self._command,
+                    self._image,
+                    self.stderr,
+                )
+            return
+
+        if self._closed and not force:
+            return
+
+        self._finished = True
+        self.exit_status = self._container.wait()['StatusCode']
+
+        if self.exit_status != 0 and not self._auto_remove:
+            self.stderr = self._container.logs(stdout=False, stderr=True)
+
+        if self._remove:
+            self._container.remove()
+
+        if check and self.exit_status != 0:
+            raise ContainerError(
+                self._container,
+                self.exit_status,
+                self._command,
+                self._image,
+                self.stderr,
+            )
 
 
 # kwargs to copy straight from run to create

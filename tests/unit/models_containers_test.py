@@ -33,6 +33,60 @@ class ContainerCollectionTest(unittest.TestCase):
             follow=True
         )
 
+    def test_run_stream_returns_without_waiting(self):
+        client = make_fake_client({
+            'logs.return_value': iter([b'hello\n', b'world\n']),
+        })
+        out = client.containers.run("alpine", "echo hello world", stream=True)
+
+        client.api.wait.assert_not_called()
+        assert list(out) == [b'hello\n', b'world\n']
+        client.api.wait.assert_called_with(FAKE_CONTAINER_ID)
+
+    def test_run_stream_raises_after_stream_end(self):
+        client = make_fake_client({
+            'logs.return_value': iter([b'line\n']),
+            'wait.return_value': {'StatusCode': 1},
+        })
+        out = client.containers.run("alpine", "echo hello world", stream=True)
+
+        assert next(out) == b'line\n'
+        with pytest.raises(docker.errors.ContainerError):
+            next(out)
+
+    def test_run_stream_wait_returns_exit_code(self):
+        client = make_fake_client({
+            'logs.return_value': iter([b'line\n']),
+        })
+        out = client.containers.run("alpine", "echo hello world", stream=True)
+
+        assert list(out) == [b'line\n']
+        assert out.wait() == 0
+        assert out.exit_status == 0
+
+    def test_run_stream_wait_check_false(self):
+        client = make_fake_client({
+            'logs.return_value': iter([b'line\n']),
+            'wait.return_value': {'StatusCode': 1},
+        })
+        out = client.containers.run("alpine", "echo hello world", stream=True)
+        assert next(out) == b'line\n'
+
+        assert out.wait(check=False) == 1
+        assert out.exit_status == 1
+
+    def test_run_stream_wait_raises_on_non_zero(self):
+        client = make_fake_client({
+            'logs.return_value': iter([b'line\n']),
+            'wait.return_value': {'StatusCode': 1},
+        })
+        out = client.containers.run("alpine", "echo hello world", stream=True)
+        assert next(out) == b'line\n'
+
+        with pytest.raises(docker.errors.ContainerError) as cm:
+            out.wait()
+        assert cm.value.exit_status == 1
+
     def test_create_container_args(self):
         networking_config = {
             'foo': EndpointConfig(
